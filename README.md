@@ -65,7 +65,7 @@ ssh user@server "cat ~/.kube/config" | ./kubectl-ikc remote_cluster local_cluste
 wget -O ./kubectl-ikc https://raw.githubusercontent.com/jirihybek/kubectl-import-kubeconfig/master/kubectl-ikc && chmod +x ./kubectl-ikc
 
 # Install to /usr/local/bin
-wget -O /usr/local/bin https://raw.githubusercontent.com/jirihybek/kubectl-import-kubeconfig/master/kubectl-ikc && chmod +x /usr/local/bin
+wget -O /usr/local/bin/kubectl-ikc https://raw.githubusercontent.com/jirihybek/kubectl-import-kubeconfig/master/kubectl-ikc && chmod +x /usr/local/bin/kubectl-ikc
 ```
 
 ## License
