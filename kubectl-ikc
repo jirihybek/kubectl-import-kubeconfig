@@ -1,0 +1,179 @@
+#!/usr/bin/env python
+import sys
+import os
+import yaml
+import copy
+import argparse
+import shutil
+from pprint import pprint
+
+"""
+Logs message to stderr
+"""
+def elog(message):
+  sys.stderr.write(message + "\n")
+
+"""
+Prints and error and exits
+"""
+def fatal_error(message):
+    elog("ERROR: " + message)
+    os._exit(1)
+
+"""
+Validates arg
+"""
+def check_arg(arg, message, value):
+  if arg is None:
+    fatal_error(message % (value))
+
+"""
+Finds item in a list by name
+"""
+def find_item(stack, name):
+  for item in stack:
+    if item["name"] == name:
+      return item
+  return None
+
+"""
+Loads config from file
+"""
+def load_config_from_file(filename, label):
+  elog("Reading " + label + " config from: %s" % (filename))
+
+  try:
+    with open(filename) as fh:
+      try:
+        data = yaml.safe_load(fh)
+      except ImportError as e:
+        fatal_error("Failed to decode " + label + " config YAML file:" % str(e))
+  except Exception as e:
+    fatal_error("Failed to open " + label + " config YAML file:" % str(e))
+
+  return data
+
+"""
+Loads config from stdin
+"""
+def load_config_from_stdin(label):
+  elog("Reading " + label + " config from stdin...")
+  
+  try:
+    input_str = sys.stdin.read()
+    data = yaml.safe_load(input_str)
+  except ImportError as e:
+    fatal_error("Failed to decode " + label + " config YAML from stdin:" % str(e))
+  except Exception as e:
+    fatal_error("Failed to load " + label + " config YAML from stdin:" % str(e))
+
+  return data
+
+"""
+Validates config
+"""
+def validate_config(config, label):
+  if type(config) is not dict or not config.get("contexts") or not config.get("clusters") or not config.get("users"):
+    fatal_error("Failed to validate " + label + " config: invalid schema.") 
+
+###
+# Read args
+###
+parser = argparse.ArgumentParser(
+  description="Import kubectl config context from one config to another."
+)
+parser.add_argument("src_context", metavar="src_context" , type=str, help='Source context name')
+parser.add_argument("dst_context", metavar='dst_context', nargs="?", type=str, help='Destination context name (new one), defaults to source context name')
+parser.add_argument("-s", dest="src_filename", default="-", type=str, help='Source config filename (or "-" for stdin), defaults to: -')
+parser.add_argument("-d", dest="dst_filename", default="~/.kube/config", type=str, help='Destination config filename, defaults to: ~/.kube/config')
+parser.add_argument("-o", dest="out_filename", type=str, help='Output config filename (or "-" for stdout), defaults to destination config')
+parser.add_argument("--backup", dest="backup_filename", type=str, help='Destination config backup filename, defaults to output config + ".backup"')
+parser.add_argument('--prefix', help='Cluster and user prefix (defaults to source context)')
+parser.add_argument('--use', dest='use_context', action='store_const', const=True, help='Activates destination context')
+
+args = parser.parse_args()
+
+# Explode params
+src_filename = args.src_filename
+dst_filename = args.dst_filename
+out_filename = args.out_filename if args.out_filename else dst_filename
+backup_filename = args.backup_filename if args.backup_filename else out_filename + ".backup"
+src_context_name = args.src_context
+dst_context_name = args.dst_context if args.dst_context else src_context_name
+resource_prefix = args.prefix if args.prefix else dst_context_name + "-"
+
+# Read source config
+if src_filename == "-":
+  src_config = load_config_from_stdin("source")
+else:
+  src_config = load_config_from_file(os.path.expanduser(src_filename), "source")
+
+# Validate dst config
+validate_config(src_config, "source")
+
+# Resolve entries
+try:
+  src_context = find_item(src_config["contexts"], src_context_name)
+  check_arg(src_context, "Source config context '%s' not found.", src_context_name)
+
+  # Resolve cluster and user
+  src_cluster = find_item(src_config["clusters"], src_context["context"]["cluster"])
+  src_user = find_item(src_config["users"], src_context["context"]["user"])
+
+  check_arg(src_cluster, "Input config cluster '%s' not found.", src_context["context"]["cluster"])
+  check_arg(src_user, "Input config user '%s' not found.", src_context["context"]["user"])
+except Exception as e:
+  fatal_error("Failed to read entries from source config:" % str(e))
+
+# Read dst kubeconfig file
+dst_config = load_config_from_file(os.path.expanduser(dst_filename), "destination")
+validate_config(dst_config, "destination")
+
+try:
+  elog("Adding new context '%s'..." % (dst_context_name))
+
+  # Check for duplicity
+  dst_context_check = find_item(dst_config["contexts"], dst_context_name)
+
+  if dst_context_check is not None:
+    fatal_error("Destination config already contains context '%s'." % (dst_context_name))
+
+  # Add to dst config
+  dst_user = copy.deepcopy(src_user)
+  dst_user["name"] = resource_prefix + dst_user["name"]
+
+  dst_cluster = copy.deepcopy(src_cluster)
+  dst_cluster["name"] = resource_prefix + dst_cluster["name"]
+
+  dst_context = copy.deepcopy(src_context)
+  dst_context["name"] = dst_context_name
+  dst_context["context"]["cluster"] = dst_cluster["name"]
+  dst_context["context"]["user"] = dst_user["name"]
+
+  dst_config["users"].append(dst_user)
+  dst_config["clusters"].append(dst_cluster)
+  dst_config["contexts"].append(dst_context)
+
+  if args.use_context is True:
+    dst_config["current-context"] = dst_context["name"]
+except Exception as e:
+  fatal_error("Failed to update entries in destination config: %s" % str(e))
+
+# Save updated config
+if out_filename == "-":
+  print(yaml.dump(dst_config))
+else:
+  # Backup old file
+  if backup_filename:
+    elog("Saving destination config original to: '%s'" % (backup_filename))
+    shutil.copy(os.path.expanduser(dst_filename), os.path.expanduser(backup_filename))
+
+  elog("Saving new destination config to: '%s'" % (out_filename))
+
+  try:
+    with open(os.path.expanduser(out_filename), 'w') as outfile:
+      yaml.dump(dst_config, outfile, default_flow_style=False)
+  except Exception as e:
+    fatal_error("Failed to write output config file: %s" % str(e))
+
+elog("Done.")
